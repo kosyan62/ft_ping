@@ -10,11 +10,15 @@
 /*                                                                            */
 /* ************************************************************************** */
 
+#include "../includes/ping.h"
 #include <getopt.h>
 #include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 /*
- * List of available options:
+ * List of available (and some not implemented) options:
  * v - verbose
  * f - prints dot on request and erase it on receive
  * l (preload) - preload send all packets immediately (for more than 3 use sudo) | 1 <= value <= 65536
@@ -33,10 +37,100 @@
  * c (count) - Stop after sending count ECHO_REQUEST packets. | In source code - 1 <= value <= LONG_MAX
  */
 
+int parse_option(t_options *parsed_options, int option, char *argument)
+{
+	long value;
+	double dvalue;
+	if (option == 'v')
+		parsed_options->verbose = true;
+	else if (option == 'f')
+		parsed_options->flood = true;
+	else if (option == 'l')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (value < 1) || (value > 65536))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 65536\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->preload = value;
+	}
+	else if (option == 'n')
+		parsed_options->numeric = true;
+	else if (option == 'w')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (0 > value) || (value > 2147483647))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 0 <= value <= 2147483647\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->deadline = (int) value;
+	}
+	else if (option == 'W')
+	{
+		dvalue = strtod(argument, NULL);
+		if ((errno == ERANGE) || (0.0 > dvalue) || (dvalue > 2147483))
+		{
+			printf("ft_ping: invalid argument '%s': bad linger time\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->timeout = (int) dvalue * 1000;
+	}
+	else if (option == 'r')
+		parsed_options->direct = true;
+	else if (option == 's')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (0 > value) || (value > 2147483647))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 0 <= value <= 2147483647\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->packetsize = (int) value;
+	}
+	else if (option == 't')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (0 > value) || (value > 255))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 0 <= value <= 255\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->ttl = (unsigned char) value;
+	}
+	else if (option == 'c')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (1 > value) || (value > 9223372036854775807))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 9223372036854775807\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->count = value;
+	}
+	else
+	{
+		printf("Invalid option '%c'\n", option);
+		return -1;
+	}
+	return 0;
+}
+
+
 int	main(int argc, char **argv)
 {
 	int	option;
+	t_options parsed_options;
 
+	/* Initialize options with zeroes */
+	bzero(&parsed_options, sizeof(t_options));
 	while (1)
 	{
 		static struct option long_options[] = {\
@@ -61,6 +155,16 @@ int	main(int argc, char **argv)
 		/* Detect the end of the options. */
 		if (option == -1)
 			break ;
+		else if (option == '?')
+			/* getopt_long already printed an error message. */
+			return (1);
+		else
+		{
+			if (parse_option(&parsed_options, option, optarg) == -1)
+				return EXIT_FAILURE;
+		}
 		printf("option %c ", option);
 	}
 }
+
+

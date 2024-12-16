@@ -13,6 +13,8 @@
 #ifndef FT_PING_H
 #define FT_PING_H
 
+#include <stdlib.h>
+
 /*
  * Booleans are usefull, so we define them here.
  */
@@ -26,18 +28,18 @@
 
 typedef	struct 	s_options
 {
-	bool	verbose;
-	bool	flood;
-	unsigned short	preload;
-	bool	numeric;
-	int		timeout;
-	int		deadline;
-	char	*pattern;
-	int		direct;
-	int		packetsize;
-	int		ttl;
-	char	*timestamp;
-	int		count;
+	bool				verbose;
+	bool				flood;
+	unsigned	short	preload;
+	bool				numeric;
+	int					timeout;
+	int					deadline;
+//	char	*pattern; TODO - implement pattern option later
+	bool				direct;
+	int					packetsize;
+	unsigned	char	ttl;
+//	char	*timestamp; TODO - implement timestamp options later
+	long				count;
 }				t_options;
 
 
