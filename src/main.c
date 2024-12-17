@@ -12,10 +12,11 @@
 
 #include "../includes/ping.h"
 #include <getopt.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-#include <limits.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <sys/types.h>
+
 
 /*
  * List of available (and some not implemented) options:
@@ -36,7 +37,6 @@
  * 		tsonly/tsandaddr/tsprespec.
  * c (count) - Stop after sending count ECHO_REQUEST packets. | In source code - 1 <= value <= LONG_MAX
  */
-
 int parse_option(t_options *parsed_options, int option, char *argument)
 {
 	long value;
@@ -123,6 +123,48 @@ int parse_option(t_options *parsed_options, int option, char *argument)
 	return 0;
 }
 
+int do_the_job(char *host, t_options options)
+{
+	struct addrinfo *dst_info, *to_free;
+	int sock_fd;
+	char buffer[1024];
+	long ret;
+
+	sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+	if (sock_fd < 0)
+	{
+		printf("Failed to create socket\n");
+		return EXIT_FAILURE;
+	}
+	dst_info = get_addrinfo(host);
+	if (!dst_info)
+		return EXIT_FAILURE;
+	/* Looking for IPv4 address */
+	to_free = dst_info;
+	while (dst_info)
+	{
+		if (dst_info->ai_family == AF_INET)
+		{
+			break ;
+		}
+		dst_info = dst_info->ai_next;
+	}
+	if (!dst_info)
+	{
+		printf("ping: %s: Name or service not known\n", host);
+		free_addrinfo(to_free);
+		return EXIT_FAILURE;
+	}
+	bzero(buffer, 1024);
+	memset(buffer, 0xff, 1024);
+	ret = sendto(sock_fd, buffer, 1024, 0, dst_info->ai_addr, dst_info->ai_addrlen);
+	printf("Sent: %ld\n", ret);
+	ret = recvfrom(sock_fd, buffer, 1024, 0, dst_info->ai_addr, &dst_info->ai_addrlen);
+	printf("Received: %ld %s\n", ret, buffer);
+	free_addrinfo(to_free);
+	return EXIT_SUCCESS;
+}
+
 
 int	main(int argc, char **argv)
 {
@@ -163,8 +205,20 @@ int	main(int argc, char **argv)
 			if (parse_option(&parsed_options, option, optarg) == -1)
 				return EXIT_FAILURE;
 		}
-		printf("option %c ", option);
 	}
+	if (optind == argc)
+	{
+		printf("ping: usage error: Destination address required\n");
+		return EXIT_FAILURE;
+	}
+	// TODO - implement multiple hosts
+	if (optind + 1 < argc)
+	{
+		printf("ping: usage error: Multiple destination addresses not supported\n");
+		return EXIT_FAILURE;
+	}
+	printf("Host to work with: %s\n", argv[optind]);
+	return  do_the_job(argv[optind], parsed_options);
 }
 
 

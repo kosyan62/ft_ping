@@ -14,6 +14,9 @@
 #define FT_PING_H
 
 #include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <stdio.h>
 
 /*
  * Booleans are usefull, so we define them here.
@@ -42,6 +45,9 @@ typedef	struct 	s_options
 	long				count;
 }				t_options;
 
+
+struct addrinfo * get_addrinfo(const char *host);
+void free_addrinfo(struct addrinfo *addrinfo);
 
 
 #endif
