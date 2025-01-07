@@ -2,7 +2,6 @@
 #include <netdb.h>
 
 
-
 struct addrinfo * get_addrinfo(const char *host)
 {
 	struct addrinfo hints;
@@ -22,9 +21,4 @@ struct addrinfo * get_addrinfo(const char *host)
 		return NULL;
 	}
 	return result;
-}
-
-void free_addrinfo(struct addrinfo *addrinfo)
-{
-	freeaddrinfo(addrinfo);
 }

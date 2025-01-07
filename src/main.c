@@ -15,7 +15,10 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
-#include <sys/types.h>
+#include <unistd.h>
+#include <netinet/ip_icmp.h>
+#include <sys/time.h>
+#include <arpa/inet.h>
 
 
 /*
@@ -37,6 +40,24 @@
  * 		tsonly/tsandaddr/tsprespec.
  * c (count) - Stop after sending count ECHO_REQUEST packets. | In source code - 1 <= value <= LONG_MAX
  */
+
+
+unsigned short checksum(void *b, int len)
+{
+	unsigned short *buf = b;
+	unsigned int sum = 0;
+	unsigned short result;
+
+	for (sum = 0; len > 1; len -= 2)
+		sum += *buf++;
+	if (len == 1)
+		sum += *(unsigned char *)buf;
+	sum = (sum >> 16) + (sum & 0xFFFF);
+	sum += (sum >> 16);
+	result = ~sum;
+	return result;
+}
+
 int parse_option(t_options *parsed_options, int option, char *argument)
 {
 	long value;
@@ -123,56 +144,159 @@ int parse_option(t_options *parsed_options, int option, char *argument)
 	return 0;
 }
 
-int do_the_job(char *host, t_options options)
+int setup(t_options *options)
 {
-	struct addrinfo *dst_info, *to_free;
-	int sock_fd;
-	char buffer[1024];
-	long ret;
+	int ret;
+	struct timeval tv_out;
+	struct addrinfo *local_dst_info;
 
-	sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-	if (sock_fd < 0)
+	/* Creating socket */
+	options->sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+	if (options->sock_fd < 0)
 	{
 		printf("Failed to create socket\n");
 		return EXIT_FAILURE;
 	}
-	dst_info = get_addrinfo(host);
-	if (!dst_info)
-		return EXIT_FAILURE;
-	/* Looking for IPv4 address */
-	to_free = dst_info;
-	while (dst_info)
+
+	/* Setting TTL */
+	ret = setsockopt(options->sock_fd, SOL_IP, IP_TTL, &options->ttl, sizeof(options->ttl));
+	if (ret < 0)
 	{
-		if (dst_info->ai_family == AF_INET)
+		printf("Failed to set TTL\n");
+		return EXIT_FAILURE;
+	}
+
+	/* Setting timeout */
+	tv_out.tv_sec = options->timeout / 1000;
+	tv_out.tv_usec = (options->timeout % 1000) * 1000;
+	ret = setsockopt(options->sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_out, sizeof tv_out);
+	if (ret < 0)
+	{
+		printf("Failed to set timeout\n");
+		return EXIT_FAILURE;
+	}
+
+	/* Getting the host addrinfo */
+	local_dst_info = get_addrinfo(options->host);
+	if (!local_dst_info)
+		return EXIT_FAILURE;
+	options->dst_info = local_dst_info;
+
+	/* Looking for IPv4 address */
+	while (local_dst_info)
+	{
+		if (local_dst_info->ai_family == AF_INET)
 		{
 			break ;
 		}
-		dst_info = dst_info->ai_next;
+		local_dst_info = local_dst_info->ai_next;
 	}
-	if (!dst_info)
+	if (!local_dst_info)
 	{
-		printf("ping: %s: Name or service not known\n", host);
-		free_addrinfo(to_free);
+		printf("ping: %s: Name or service not known\n", options->host);
+		freeaddrinfo(options->dst_info);
 		return EXIT_FAILURE;
 	}
-	bzero(buffer, 1024);
-	memset(buffer, 0xff, 1024);
-	ret = sendto(sock_fd, buffer, 1024, 0, dst_info->ai_addr, dst_info->ai_addrlen);
-	printf("Sent: %ld\n", ret);
-	ret = recvfrom(sock_fd, buffer, 1024, 0, dst_info->ai_addr, &dst_info->ai_addrlen);
-	printf("Received: %ld %s\n", ret, buffer);
-	free_addrinfo(to_free);
+	options->dst_addr = local_dst_info->ai_addr;
+	options->dst_addr_len = local_dst_info->ai_addrlen;
+	return EXIT_SUCCESS;
+}
+
+int ft_ping(char *host, t_options options)
+{
+	/* Create packet */
+	struct icmphdr packet;
+	packet.type = ICMP_ECHO;
+	packet.code = 0;
+	packet.checksum = 0;
+	packet.un.echo.id = getpid();
+	packet.un.echo.sequence = 1;
+	packet.checksum = checksum((unsigned short *)&packet, sizeof(packet));
+
+	/* Sending and receiving */
+	int ret;
+	int i;
+	int sent = 0;
+	int received = 0;
+	struct sockaddr_in *dst_addr_in;
+	struct sockaddr_in src_addr;
+	socklen_t src_addr_len;
+	char packet_buffer[options.packetsize];
+	char recv_buffer[options.packetsize];
+	struct timeval start_time;
+	struct timeval end_time;
+	long time_diff;
+	long min_time = 0;
+	long max_time = 0;
+	long avg_time = 0;
+	long total_time = 0;
+
+	dst_addr_in = (struct sockaddr_in *)options.dst_addr;
+	src_addr_len = sizeof(src_addr);
+	gettimeofday(&start_time, NULL);
+
+	printf("COUNT: %ld\n", options.count);
+	while (sent < options.count)
+	{
+		/* Send packet */
+		ret = sendto(options.sock_fd, &packet, sizeof(packet), 0, options.dst_addr, options.dst_addr_len);
+		if (ret < 0)
+		{
+			printf("Failed to send packet\n");
+			return EXIT_FAILURE;
+		}
+		sent++;
+		/* Receive packet */
+		ret = recvfrom(options.sock_fd, recv_buffer, options.packetsize, 0, (struct sockaddr *)&src_addr, &src_addr_len);
+		if (ret < 0)
+		{
+			printf("Failed to receive packet\n");
+			return EXIT_FAILURE;
+		}
+		printf("Received packet\n");
+		struct iphdr *ip_header = (struct iphdr *)recv_buffer;
+		struct icmphdr *icmp_header = (struct icmphdr *)(recv_buffer + ip_header->ihl * 4);
+
+		gettimeofday(&end_time, NULL);
+		time_diff = (end_time.tv_sec - start_time.tv_sec) * 1000 + (end_time.tv_usec - start_time.tv_usec) / 1000;
+		if (time_diff < min_time || min_time == 0)
+			min_time = time_diff;
+		if (time_diff > max_time)
+			max_time = time_diff;
+		total_time += time_diff;
+		if (icmp_header->type == ICMP_ECHOREPLY)
+		{
+			received++;
+		}
+		printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%ld ms type=%d code=%d\n", ret, inet_ntoa(src_addr.sin_addr), packet.un.echo.sequence, options.ttl, time_diff, icmp_header->type, icmp_header->code);
+	}
+	avg_time = total_time / sent;
+	printf("--- %s ping statistics ---\n", host);
+	printf("%d packets transmitted, %d received, %d%% packet loss, time %ldms\n", sent, received, (sent - received) * 100 / sent, total_time);
+
+
 	return EXIT_SUCCESS;
 }
 
 
 int	main(int argc, char **argv)
 {
+	int ret;
 	int	option;
 	t_options parsed_options;
 
-	/* Initialize options with zeroes */
-	bzero(&parsed_options, sizeof(t_options));
+	/* Initialize options with defaults*/
+	parsed_options.dst_info = NULL;
+	parsed_options.verbose = false;
+	parsed_options.flood = false;
+	parsed_options.preload = 0;
+	parsed_options.numeric = false;
+	parsed_options.timeout = 1000;
+	parsed_options.direct = false;
+	parsed_options.packetsize = 56;
+	parsed_options.ttl = 64;
+	parsed_options.count = 3;
+
 	while (1)
 	{
 		static struct option long_options[] = {\
@@ -217,8 +341,24 @@ int	main(int argc, char **argv)
 		printf("ping: usage error: Multiple destination addresses not supported\n");
 		return EXIT_FAILURE;
 	}
-	printf("Host to work with: %s\n", argv[optind]);
-	return  do_the_job(argv[optind], parsed_options);
-}
+	if (getuid() != 0)
+	{
+		printf("ping: permission denied: Please run as root\n");
+		return EXIT_FAILURE;
+	}
+	if (strlen(argv[optind]) > 255)
+	{
+		printf("ping: %s: Name or service not known (too long)\n", argv[optind]);
+		return EXIT_FAILURE;
+	}
+	strcpy(parsed_options.host, argv[optind]);
 
+	if (setup(&parsed_options) == EXIT_FAILURE)
+		return EXIT_FAILURE;
+	ret = ft_ping(argv[optind], parsed_options);
+	freeaddrinfo(parsed_options.dst_info);
+	if (parsed_options.sock_fd)
+		close(parsed_options.sock_fd);
+	return ret;
+}
 

@@ -31,13 +31,17 @@
 
 typedef	struct 	s_options
 {
+	char				host[256];
+	struct addrinfo		*dst_info;
+	struct sockaddr		*dst_addr;
+	size_t 				dst_addr_len;
+	int					sock_fd;
 	bool				verbose;
 	bool				flood;
 	unsigned	short	preload;
 	bool				numeric;
 	int					timeout;
 	int					deadline;
-//	char	*pattern; TODO - implement pattern option later
 	bool				direct;
 	int					packetsize;
 	unsigned	char	ttl;
@@ -47,7 +51,6 @@ typedef	struct 	s_options
 
 
 struct addrinfo * get_addrinfo(const char *host);
-void free_addrinfo(struct addrinfo *addrinfo);
 
 
 #endif
