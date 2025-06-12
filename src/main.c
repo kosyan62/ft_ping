@@ -320,7 +320,7 @@ int ft_ping(char *host, t_options options)
 				break;
 			}
 
-			ret = recvfrom(options.sock_fd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&src_addr, &src_addr_len);
+			ret = recvfrom(options.sock_fd, recv_buffer, sizeof(recv_buffer), MSG_DONTWAIT, (struct sockaddr*)&src_addr, &src_addr_len);
 			if (ret < 0)
 			{
 				if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -328,7 +328,14 @@ int ft_ping(char *host, t_options options)
 					if (options.verbose)
 						printf("Request timed out\n");
 					break;
-				} else {
+				}
+				else if ( errno == EINTR ) {
+					/* Interrupted by signal, just leave the loop */
+					ping_continue = 0;  // Stop pinging on signal
+					if (options.verbose)
+						printf("Request interrupted by signal\n");
+				}
+				else {
 					perror("recvfrom");
 					return EXIT_FAILURE;
 				}
