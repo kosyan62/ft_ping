@@ -17,6 +17,13 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netinet/ip_icmp.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 /*
  * Booleans are usefull, so we define them here.
@@ -51,6 +58,8 @@ typedef	struct 	s_options
 
 
 struct addrinfo * get_addrinfo(const char *host);
+unsigned short checksum(void *b, int len);
+void fill_icmp_packet(void *buffer, int sequence, size_t packet_size);
 
 
 #endif

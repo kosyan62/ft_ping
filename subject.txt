@@ -1,0 +1,100 @@
+ft_ping
+Summary: This project is about recoding the ping command.
+Version: 5.1Contents
+IForewords2
+IIIntroduction3
+IIIGeneral Instructions4
+IVMandatory Part5
+VBonus Part6
+VISubmission and peer-evaluation7
+1Chapter I
+Forewords
+Ettore Majorana (born on 5 August 1906 – possibly dying after 1959) was an Italian
+theoretical physicist. He is best known for his work in particle physics, with particular
+applications of neutrino theory. His sudden and mysterious loss, in the spring of 1938,
+gave rise to many speculations on a possible suicide in the Tyrrhenian Sea, or on a vol-
+untary disappearance.
+« There are several categories of scientists in the world; those of second or third rank
+do their best but never get very far. Then there is the first rank, those who make impor-
+tant discoveries, fundamental to scientific progress. But then there are the geniuses, like
+Galilei and Newton. Majorana was one of these. »
+In 1926, Professor Corbino, eager to promote modern physics in Rome, appointed En-
+rico Fermi to the chair of theoretical physics; Edoardo Amaldi and Emilio Segrè joined the
+group in the fall of 1927. Segrè succeeded in convincing Majorana that physics matched
+his aspirations and abilities, and in getting him to join the physics faculty as well. This
+transfer is made in January 1928, after a meeting with Fermi.
+The meeting gave rise to a significant anecdote: Majorana asked about current re-
+search at the Institute. Fermi was working on the statistical model of the atom: he
+hypothesized that the electrostatic potential to which an electron is subjected is approx-
+imately equal to the average potential created by the nucleus and the other electrons,
+which makes it possible to determine an approximate value of the energy level of the elec-
+tron. Fermi exposes to Majorana the general lines of this "universal potential of Fermi"
+- which will take later the name of model of Thomas-Fermi -, then shows him a table
+where he gathered some of the numerical values of this average potential, that he had
+calculated in one week with the help of a mechanical calculating machine. Majorana
+listens with interest, and after having asked for some precisions, leaves. The following
+day, at the end of the morning, Majorana returns to the institute, enters the office of
+Fermi and without preamble asks to re-examine the table which he saw the day before.
+Drawing then from his pocket a paper on which in one night he makes a similar table,
+but complete, he concludes that the results of Fermi are right. Then he leaves the office.
+Source.
+2Chapter II
+Introduction
+Ping is the name of a command that allows to test the accessibility of another machine
+through the IP network. The command measures also the time taken to receive a response,
+called round-trip time.
+3Chapter III
+General Instructions
+• Your project must be realized in a virtual machine running on Debian (>= 7.0).
+• Your virtual machine must have all the necessary software to complete your project.
+These softwares must be configured and installed.
+• You must be able to use your virtual machine from a cluster computer.
+• This project will be corrected by humans only. You’re allowed to organise and name
+your files as you see fit, but you must follow the following rules
+• You must use C and submit a Makefile
+• Your Makefile must compile the project and must contain the usual rules. It must
+recompile and re-link the program only if necessary.
+• You have to handle errors carefully. In no way can your program quit in an unex-
+pected manner (Segmentation fault, bus error, double free, etc).
+• You are authorised to use the libc functions to complete this project.
+ATTENTION: Program in C, all libC is authorised, using the system
+ping or the sources of a standard ping in any way is forbidden.
+4Chapter IV
+Mandatory Part
+• The executable must be named ft_ping.
+• You will take as reference the ping implementation from inetutils-2.0 (ping -V).
+• You have to manage the -v -? options.
+The -v option here will also allow us to see the results in case of a
+problem or an error linked to the packets, which logically shouldn’t
+force the program to stop (the modification of the TTL value can help
+to force an error).
+• You will have to manage a simple IPv4 (address/hostname) as parameters.
+• You will have to manage FQDN without doing the DNS resolution in the packet
+return
+You are allowed to use all the functions of the printf family.
+For the smarty pants (or not)...
+call a real ping.
+5
+Obviously you are NOT allowed toChapter V
+Bonus Part
+Find below a few ideas of interesting bonuses:
+• Additional -f -l -n -w -W -p -r -s -T --ttl --ip-timestamp flags...
+the flags -V, –usage, –echo are not considered as bonus
+Of course two flags corresponding to the same feature (eg:
+–type) are not considered as two bonuses
+-t and
+The bonus part will only be assessed if the mandatory part is
+PERFECT. Perfect means the mandatory part has been integrally done
+and works without malfunctioning. If you have not passed ALL the
+mandatory requirements, your bonus part will not be evaluated at all.
+6Chapter VI
+Submission and peer-evaluation
+Turn in your assignment in your Git repository as usual. Only the work inside your repos-
+itory will be evaluated during the defense. Don’t hesitate to double check the names of
+your folders and files to ensure they are correct.
+• You have to be in a VM with a Linux kernel > 3.14. Note that grading was designed
+on a Debian 7.0 stable.
+• Except for the RTT line and the reverse DNS resolution, the result must have an
+indentation identical to the implementation from inetutils-2.0.
+A delay of +/- 30ms is tolerated on the reception of a packet.
+7
