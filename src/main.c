@@ -448,6 +448,7 @@ int	main(int argc, char **argv)
 
 	/* Initialize options with defaults*/
 	parsed_options.dst_info = NULL;
+	parsed_options.sock_fd = -1;
 	parsed_options.verbose = false;
 	parsed_options.flood = false;
 	parsed_options.preload = 0;
@@ -558,10 +559,15 @@ int	main(int argc, char **argv)
 	strcpy(parsed_options.host, argv[optind]);
 
 	if (setup(&parsed_options) == EXIT_FAILURE)
+	{
+		/* setup() may fail after the socket was opened */
+		if (parsed_options.sock_fd >= 0)
+			close(parsed_options.sock_fd);
 		return EXIT_FAILURE;
+	}
 	ret = ft_ping(argv[optind], parsed_options);
 	freeaddrinfo(parsed_options.dst_info);
-	if (parsed_options.sock_fd)
+	if (parsed_options.sock_fd >= 0)
 		close(parsed_options.sock_fd);
 	return ret;
 }
