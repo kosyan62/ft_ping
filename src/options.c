@@ -131,6 +131,8 @@ static int	parse_options(t_ping *ping, int argc, char **argv, int *status)
 	};
 	int							opt;
 
+	/* getopt prints its errors with argv[0], keep them short */
+	argv[0] = "ft_ping";
 	while (1)
 	{
 		optopt = 0;
