@@ -56,87 +56,86 @@ unsigned short checksum(void *b, int len)
 	return result;
 }
 
-int parse_option(t_options *parsed_options, int option, char *argument)
+/*
+ * Parses a number like inetutils ping does: the whole argument must be
+ * a number in [min, max], otherwise an error is printed and -1 returned.
+ */
+int parse_number(const char *argument, double min, double max, double *value)
 {
-	long value;
-	double dvalue;
+	char *end;
 
 	errno = 0;
+	*value = strtod(argument, &end);
+	if (end == argument || *end != '\0')
+	{
+		fprintf(stderr, "ft_ping: invalid value (`%s' near `%s')\n", argument,
+			end == argument ? argument : end);
+		return -1;
+	}
+	if (*value < min)
+	{
+		fprintf(stderr, "ft_ping: option value too small: %s\n", argument);
+		return -1;
+	}
+	if (errno == ERANGE || *value > max)
+	{
+		fprintf(stderr, "ft_ping: option value too big: %s\n", argument);
+		return -1;
+	}
+	return 0;
+}
+
+int parse_option(t_options *parsed_options, int option, char *argument)
+{
+	double value;
+
 	if (option == 'v')
 		parsed_options->verbose = true;
 	else if (option == 'f')
 		parsed_options->flood = true;
 	else if (option == 'l')
 	{
-		value = strtol(argument, NULL, 10);
-		if ((errno == ERANGE) || (value < 1) || (value > 65536))
-		{
-			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 65536\n",
-				   argument);
+		if (parse_number(argument, 0, 65536, &value) < 0)
 			return -1;
-		}
-		parsed_options->preload = value;
+		parsed_options->preload = (unsigned short) value;
 	}
 	else if (option == 'n')
 		parsed_options->numeric = true;
 	else if (option == 'w')
 	{
-		value = strtol(argument, NULL, 10);
-		if ((errno == ERANGE) || (0 > value) || (value > 2147483647))
-		{
-			printf("ft_ping: invalid argument '%s': out of range 0 <= value <= 2147483647\n",
-				   argument);
+		if (parse_number(argument, 1, 2147483647, &value) < 0)
 			return -1;
-		}
 		parsed_options->deadline = (int) value;
 	}
 	else if (option == 'W')
 	{
-		dvalue = strtod(argument, NULL);
-		if ((errno == ERANGE) || (0.0 >= dvalue) || (dvalue > 2147483))
-		{
-			printf("ft_ping: invalid argument '%s': bad linger time\n",
-				   argument);
+		/* seconds, fractions allowed: -W 0.5 */
+		if (parse_number(argument, 0.001, 2147483, &value) < 0)
 			return -1;
-		}
-		parsed_options->timeout = (int) (dvalue * 1000);
+		parsed_options->timeout = (int) (value * 1000);
 	}
 	else if (option == 'r')
 		parsed_options->direct = true;
 	else if (option == 's')
 	{
-		value = strtol(argument, NULL, 10);
 		/* 65507 = max IP packet (65535) - IP header (20) - ICMP header (8) */
-		if ((errno == ERANGE) || (0 > value) || (value > 65507))
-		{
-			printf("ft_ping: invalid argument '%s': out of range 0 <= value <= 65507\n",
-				   argument);
+		if (parse_number(argument, 0, 65507, &value) < 0)
 			return -1;
-		}
 		/* -s is the number of data bytes, packetsize includes ICMP header */
 		parsed_options->packetsize = (int) value + 8;
 	}
 	else if (option == 't')
 	{
-		value = strtol(argument, NULL, 10);
-		if ((errno == ERANGE) || (1 > value) || (value > 255))
-		{
-			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 255\n",
-				   argument);
+		if (parse_number(argument, 1, 255, &value) < 0)
 			return -1;
-		}
 		parsed_options->ttl = (unsigned char) value;
 	}
 	else if (option == 'c')
 	{
-		value = strtol(argument, NULL, 10);
-		if ((errno == ERANGE) || (1 > value))
-		{
-			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 9223372036854775807\n",
-				   argument);
+		/* 0 means ping until Ctrl+C, as in inetutils */
+		if (parse_number(argument, 0, 9223372036854775807.0, &value) < 0)
 			return -1;
-		}
-		parsed_options->count = value;
+		parsed_options->count = (long) value;
 	}
 	else
 	{
