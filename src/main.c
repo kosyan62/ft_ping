@@ -6,179 +6,563 @@
 /*   By: kosyan62 <kosyan62@student.42.fr>          +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2024/12/13 23:01:17 by kosyan62          #+#    #+#             */
-/*   Updated: 2026/10/23 12:00:00 by kosyan62         ###   ########.fr       */
+/*   Updated: 2024/12/13 23:06:30 by kosyan62         ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
-#include "ping.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
+#include "../includes/ping.h"
+#include <getopt.h>
+#include <sys/time.h>
 #include <math.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/select.h>
-#include <sys/socket.h>
+#include <netinet/ip.h>
+#include <signal.h>
 
-volatile sig_atomic_t	g_stop = 0;
-
-static void	on_sigint(int sig)
-{
-	(void)sig;
-	g_stop = 1;
-}
-
-double	tv_diff_ms(const struct timeval *a, const struct timeval *b)
-{
-	return ((a->tv_sec - b->tv_sec) * 1000.0
-		+ (a->tv_usec - b->tv_usec) / 1000.0);
-}
-
-void	print_stats(t_ping *ping)
-{
-	double	avg;
-
-	printf("--- %s ping statistics ---\n", ping->host);
-	printf("%ld packets transmitted, %ld packets received, ",
-		ping->transmitted, ping->received);
-	if (ping->transmitted > 0)
-		printf("%ld%% packet loss",
-			(ping->transmitted - ping->received) * 100 / ping->transmitted);
-	printf("\n");
-	if (ping->received > 0 && ping->datalen >= sizeof(struct timeval))
-	{
-		avg = ping->tsum / ping->received;
-		printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n",
-			ping->tmin, avg, ping->tmax,
-			sqrt(fabs(ping->tsum2 / ping->received - avg * avg)));
-	}
-}
 
 /*
- * Returns how many milliseconds we may wait in select() before something
- * has to happen, or -1 if pinging is over.
+ * List of available (and some not implemented) options:
+ * v - verbose
+ * f - prints dot on request and erase it on receive
+ * l (preload) - preload send all packets immediately (for more than 3 use sudo) | 1 <= value <= 65536
+ * n - Numeric output only. No attempt will be made to lookup symbolic names
+ * 		for host addresses.
+ * w (deadline) - timeout, in seconds, before ping exits regardless of how many
+ * 		packets have been sent or received. | 0 <= value <= 2147483647
+ * W (timeout) - timeout in seconds to wait for response. | Strange stuff - 2147483 is max value, uses first 3 bytes of integer maybe
+ * p (pattern) - pad bytes to send | 16 bytes max
+ * r - Bypass the normal routing tables and send directly to a host on an
+ * 		attached interface
+ * s (packetsize) - Specifies the number of data bytes to be sent. | 0 <= value <= 2147483647
+ * t (ttl)- Set the IP Time to Live. | 0 <= value <= 255
+ * T (timestamp) - Set the IP timestamp available values is
+ * 		tsonly/tsandaddr/tsprespec.
+ * c (count) - Stop after sending count ECHO_REQUEST packets. | In source code - 1 <= value <= LONG_MAX
  */
-static double	next_timeout(t_ping *ping)
-{
-	struct timeval	now;
-	double			wait;
-	double			left;
 
-	gettimeofday(&now, NULL);
-	if (ping->count && ping->transmitted >= ping->count)
+_Bool ping_continue = 1;
+
+unsigned short checksum(void *b, int len)
+{
+	unsigned short *buf = b;
+	unsigned int sum = 0;
+	unsigned short result;
+
+	for (sum = 0; len > 1; len -= 2)
+		sum += *buf++;
+	if (len == 1)
+		sum += *(unsigned char *)buf;
+	sum = (sum >> 16) + (sum & 0xFFFF);
+	sum += (sum >> 16);
+	result = ~sum;
+	return result;
+}
+
+int parse_option(t_options *parsed_options, int option, char *argument)
+{
+	long value;
+	double dvalue;
+
+	errno = 0;
+	if (option == 'v')
+		parsed_options->verbose = true;
+	else if (option == 'f')
+		parsed_options->flood = true;
+	else if (option == 'l')
 	{
-		if (ping->received >= ping->transmitted)
-			return (-1);
-		wait = ping->linger * 1000.0 - tv_diff_ms(&now, &ping->last_send);
-		if (wait <= 0)
-			return (-1);
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (value < 1) || (value > 65536))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 65536\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->preload = value;
+	}
+	else if (option == 'n')
+		parsed_options->numeric = true;
+	else if (option == 'w')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (0 > value) || (value > 2147483647))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 0 <= value <= 2147483647\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->deadline = (int) value;
+	}
+	else if (option == 'W')
+	{
+		dvalue = strtod(argument, NULL);
+		if ((errno == ERANGE) || (0.0 >= dvalue) || (dvalue > 2147483))
+		{
+			printf("ft_ping: invalid argument '%s': bad linger time\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->timeout = (int) (dvalue * 1000);
+	}
+	else if (option == 'r')
+		parsed_options->direct = true;
+	else if (option == 's')
+	{
+		value = strtol(argument, NULL, 10);
+		/* 65507 = max IP packet (65535) - IP header (20) - ICMP header (8) */
+		if ((errno == ERANGE) || (0 > value) || (value > 65507))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 0 <= value <= 65507\n",
+				   argument);
+			return -1;
+		}
+		/* -s is the number of data bytes, packetsize includes ICMP header */
+		parsed_options->packetsize = (int) value + 8;
+	}
+	else if (option == 't')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (1 > value) || (value > 255))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 255\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->ttl = (unsigned char) value;
+	}
+	else if (option == 'c')
+	{
+		value = strtol(argument, NULL, 10);
+		if ((errno == ERANGE) || (1 > value))
+		{
+			printf("ft_ping: invalid argument '%s': out of range 1 <= value <= 9223372036854775807\n",
+				   argument);
+			return -1;
+		}
+		parsed_options->count = value;
 	}
 	else
-		wait = 1000.0 - tv_diff_ms(&now, &ping->last_send);
-	if (ping->deadline)
 	{
-		left = ping->deadline * 1000.0 - tv_diff_ms(&now, &ping->start);
-		if (left <= 0)
-			return (-1);
-		if (left < wait)
-			wait = left;
+		printf("Invalid option '%c'\n", option);
+		return -1;
 	}
-	if (wait < 0)
-		wait = 0;
-	return (wait);
+	return 0;
 }
 
-static void	receive_one(t_ping *ping)
+int setup(t_options *options)
 {
-	static unsigned char	buf[RECV_BUF_SIZE];
-	struct sockaddr_in		from;
-	socklen_t				fromlen;
-	ssize_t					n;
+	int ret;
+	struct timeval tv_out;
+	struct addrinfo *local_dst_info;
 
-	fromlen = sizeof(from);
-	n = recvfrom(ping->sock, buf, sizeof(buf), 0,
-			(struct sockaddr *)&from, &fromlen);
-	if (n < 0)
+	/* Creating socket */
+	options->sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+	if (options->sock_fd < 0)
 	{
-		if (errno != EINTR && errno != EAGAIN)
-			fprintf(stderr, "ft_ping: recvfrom: %s\n", strerror(errno));
-		return ;
+		perror("Failed to create socket");
+		return EXIT_FAILURE;
 	}
-	handle_packet(ping, buf, n, &from);
+
+	/* Setting TTL */
+	ret = setsockopt(options->sock_fd, SOL_IP, IP_TTL, &options->ttl, sizeof(options->ttl));
+	if (ret < 0)
+	{
+		perror("Failed to set TTL");
+		return EXIT_FAILURE;
+	}
+
+	/* Setting timeout */
+	tv_out.tv_sec = options->timeout / 1000;
+	tv_out.tv_usec = (options->timeout % 1000) * 1000;
+	ret = setsockopt(options->sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_out, sizeof tv_out);
+	if (ret < 0)
+	{
+		perror("Failed to set timeout");
+		return EXIT_FAILURE;
+	}
+
+	/* Getting the host addrinfo */
+	local_dst_info = get_addrinfo(options->host);
+	if (!local_dst_info)
+	{
+		return EXIT_FAILURE;
+	}
+	options->dst_info = local_dst_info;
+
+	/* Looking for IPv4 address */
+	while (local_dst_info)
+	{
+		if (local_dst_info->ai_family == AF_INET)
+			break ;
+		local_dst_info = local_dst_info->ai_next;
+	}
+	if (!local_dst_info)
+	{
+		fprintf(stderr, "ft_ping: unknown host\n");
+		freeaddrinfo(options->dst_info);
+		return EXIT_FAILURE;
+	}
+	options->dst_addr = local_dst_info->ai_addr;
+	options->dst_addr_len = local_dst_info->ai_addrlen;
+	/* We moved the initial message to ft_ping for consistency with standard ping */
+	return EXIT_SUCCESS;
+}
+
+void	fill_icmp_packet(void *buffer, int sequence, size_t packet_size)
+{
+	struct icmp *packet = (struct icmp *)buffer;
+	packet->icmp_type = ICMP_ECHO;
+	packet->icmp_code = 0;
+	packet->icmp_id = htons(getpid() & 0xFFFF);  // Use network byte order for ID and truncate to 16 bits
+	packet->icmp_seq = htons(sequence);          // Convert sequence to network byte order too
+
+	/* Fill data portion with pattern (after 8-byte ICMP header) */
+	unsigned char *data = (unsigned char *)buffer + 8;
+	for (size_t i = 0; i < packet_size - 8; i++) {
+		data[i] = i % 256;
+	}
+
+	packet->icmp_cksum = 0;
+	packet->icmp_cksum = checksum((unsigned short *)buffer, packet_size);
+}
+
+void sigint_handler(int signum)
+{
+	if (signum == SIGINT)
+	{
+		ping_continue = 0;  // Set flag to stop pinging
+	}
+}
+
+long elapsed_ms(struct timeval *since)
+{
+	struct timeval now;
+
+	gettimeofday(&now, NULL);
+	return (now.tv_sec - since->tv_sec) * 1000 + (now.tv_usec - since->tv_usec) / 1000;
 }
 
 /*
- * Main loop: one echo request every second, replies are read as soon as
- * they arrive. With -c, after the last request we wait for the missing
- * replies at most -W seconds. -w stops everything after N seconds.
+ * Sleep the rest of the 1 second interval, counted from the moment the
+ * packet was sent, so packets go out every second whatever the RTT is.
  */
-static void	ping_loop(t_ping *ping)
+void wait_next_packet(struct timeval *packet_start_time)
 {
-	fd_set			fds;
-	struct timeval	tv;
-	double			wait;
-	int				ret;
+	long left_ms = 1000 - elapsed_ms(packet_start_time);
 
-	gettimeofday(&ping->start, NULL);
-	send_echo(ping);
-	while (!g_stop)
-	{
-		wait = next_timeout(ping);
-		if (wait < 0)
-			break ;
-		FD_ZERO(&fds);
-		FD_SET(ping->sock, &fds);
-		tv.tv_sec = (long)(wait / 1000);
-		tv.tv_usec = (long)((wait - tv.tv_sec * 1000.0) * 1000);
-		ret = select(ping->sock + 1, &fds, NULL, NULL, &tv);
-		if (ret < 0 && errno != EINTR)
-		{
-			fprintf(stderr, "ft_ping: select: %s\n", strerror(errno));
-			break ;
-		}
-		if (ret > 0)
-			receive_one(ping);
-		else if (ret == 0 && (!ping->count || ping->transmitted < ping->count)
-			&& next_timeout(ping) == 0)
-			send_echo(ping);
+	if (left_ms > 0)
+		usleep(left_ms * 1000);
+}
+
+int ft_ping(char *host, t_options options)
+{
+	/* Sending and receiving */
+	int ret;
+	int sent = 0;
+	int received = 0;
+	struct sockaddr_in *dst_addr_in;
+	struct sockaddr_in src_addr;
+	socklen_t src_addr_len;
+	char packet_buffer[options.packetsize];
+	char recv_buffer[options.packetsize + 128]; /* Add extra space for IP header */
+	struct timeval packet_start_time;
+	struct timeval end_time;
+	struct timeval program_start_time;
+
+	/* Statistics */
+	double min_rtt = -1;  /* Use -1 as a flag value */
+	double max_rtt = 0;
+	double total_rtt = 0;
+	double rtt_sum_squares = 0;
+
+	dst_addr_in = (struct sockaddr_in *)options.dst_addr;
+	src_addr_len = sizeof(src_addr);
+	gettimeofday(&program_start_time, NULL);
+	/* Set sigint handler*/
+	signal(SIGINT, sigint_handler);  // Ignore SIGINT for now, we will handle it later
+	/* Initial message */
+	if (options.verbose) {
+		printf("PING %s (%s): %d data bytes, id 0x%04x = %d\n",
+			options.host,
+			inet_ntoa(dst_addr_in->sin_addr),
+			options.packetsize - 8,
+			getpid() & 0xFFFF,
+			getpid() & 0xFFFF);
+	} else {
+		printf("PING %s (%s): %d data bytes\n",
+			options.host,
+			inet_ntoa(dst_addr_in->sin_addr),
+			options.packetsize - 8);
 	}
+
+	while ((options.count == 0 || sent < options.count) && ping_continue)
+	{
+		/* -w: stop after deadline seconds */
+		if (options.deadline && elapsed_ms(&program_start_time) >= options.deadline * 1000L)
+			break;
+
+		/* Fill packet */
+		memset(packet_buffer, 0, options.packetsize);
+		fill_icmp_packet(packet_buffer, sent, options.packetsize);
+
+		/* Record start time for this packet */
+		gettimeofday(&packet_start_time, NULL);
+
+		/* Send packet */
+		/* Verbose message moved to header */
+
+		ret = (int) sendto(options.sock_fd, packet_buffer, options.packetsize, 0, options.dst_addr, options.dst_addr_len);
+		if (ret < 0)
+		{
+			printf("Failed to send packet\n");
+			return EXIT_FAILURE;
+		}
+		sent++;
+
+		/* Receive packet - keep trying until we get a valid reply or timeout */
+		src_addr_len = sizeof(src_addr);
+
+		/* Track current sequence number we're looking for */
+		int expected_seq = sent - 1;
+
+		/* Set a time limit for receiving valid replies */
+		struct timeval receive_start_time;
+		gettimeofday(&receive_start_time, NULL);
+		struct timeval current_time;
+		bool valid_reply_received = false;
+		double rtt_ms = 0;
+		struct iphdr *ip_header = NULL;
+		struct icmp *icmp_header = NULL;
+
+		while (!valid_reply_received) {
+			/* Check if we've been waiting too long (more than socket timeout) */
+			gettimeofday(&current_time, NULL);
+			long wait_time_ms = (current_time.tv_sec - receive_start_time.tv_sec) * 1000 +
+				(current_time.tv_usec - receive_start_time.tv_usec) / 1000;
+			if (wait_time_ms > options.timeout)
+				break;
+
+			/* Blocking call, it waits at most the SO_RCVTIMEO set in setup() */
+			ret = recvfrom(options.sock_fd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&src_addr, &src_addr_len);
+			if (ret < 0)
+			{
+				/* EAGAIN - timeout, EINTR - Ctrl+C, stop waiting for this packet */
+				if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+					break;
+				perror("recvfrom");
+				return EXIT_FAILURE;
+			}
+
+			/* Calculate RTT */
+			gettimeofday(&end_time, NULL);
+			long time_diff_us = (end_time.tv_sec - packet_start_time.tv_sec) * 1000000 +
+								(end_time.tv_usec - packet_start_time.tv_usec);
+			rtt_ms = time_diff_us / 1000.0; /* Convert to milliseconds with decimal precision */
+
+			/* Parse the IP and ICMP headers */
+			ip_header = (struct iphdr *)recv_buffer;
+			if (ret < (int)(ip_header->ihl * 4) + 8)
+				continue; /* Too short to be an ICMP packet */
+			icmp_header = (struct icmp *)(recv_buffer + (ip_header->ihl * 4));
+
+			/* ICMP error (TTL exceeded, unreachable...) about our request */
+			if (is_icmp_error(icmp_header->icmp_type)) {
+				if (print_icmp_error(icmp_header, ret - ip_header->ihl * 4, &src_addr,
+						dst_addr_in, options.verbose))
+					break;
+				continue;
+			}
+
+			/* Check if this is a valid reply for our request */
+			if (icmp_header->icmp_type == ICMP_ECHOREPLY &&
+				ntohs(icmp_header->icmp_id) == (getpid() & 0xFFFF)) {
+
+				/* Check if the sequence number matches what we expect */
+				if (ntohs(icmp_header->icmp_seq) == expected_seq) {
+					valid_reply_received = true;
+				} else {
+					/* If sequence doesn't match, we continue looking */
+					continue;
+				}
+			} else {
+				/* Continue to wait for a valid reply */
+				continue;
+			}
+		}
+
+		/* If no valid reply was received, continue to next packet */
+		if (!valid_reply_received) {
+			if (!options.flood && ping_continue)
+				wait_next_packet(&packet_start_time);
+			continue;
+		}
+
+		/* Successfully received a valid reply */
+		received++;
+
+		/* Update statistics */
+		if (min_rtt < 0 || rtt_ms < min_rtt)
+			min_rtt = rtt_ms;
+		if (rtt_ms > max_rtt)
+			max_rtt = rtt_ms;
+		total_rtt += rtt_ms;
+		rtt_sum_squares += rtt_ms * rtt_ms;
+
+		/* Output in standard ping format */
+		printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%.3f ms\n",
+			ret - (ip_header->ihl * 4), /* Subtract IP header length */
+			inet_ntoa(src_addr.sin_addr),
+			ntohs(icmp_header->icmp_seq),
+			ip_header->ttl,
+			rtt_ms);
+
+		/* Wait a bit before sending the next packet */
+		if (!options.flood && ping_continue)
+			wait_next_packet(&packet_start_time);
+	}
+
+
+	/* Calculate statistics */
+	double avg_rtt = received > 0 ? total_rtt / received : 0;
+	double stddev = 0;
+	/* Population standard deviation, as in inetutils ping */
+	if (received > 0)
+		stddev = sqrt(fabs(rtt_sum_squares / received - avg_rtt * avg_rtt));
+
+	/* Output statistics */
+	printf("--- %s ping statistics ---\n", host);
+	printf("%d packets transmitted, %d packets received, %d%% packet loss\n",
+		sent, received, received > 0 ? (sent - received) * 100 / sent : 100);
+
+	if (received > 0) {
+		printf("round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n",
+			min_rtt, avg_rtt, max_rtt, stddev);
+	}
+
+	/* Return 1 if we didn't receive any packets, 0 if we got at least one response */
+	return (received == 0) ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
-static void	init_ping(t_ping *ping)
-{
-	memset(ping, 0, sizeof(*ping));
-	ping->datalen = DEFAULT_DATALEN;
-	ping->linger = DEFAULT_LINGER;
-	ping->sock = -1;
-	ping->id = (uint16_t)(getpid() & 0xFFFF);
-}
 
 int	main(int argc, char **argv)
 {
-	t_ping				ping;
-	int					status;
-	struct sigaction	sa;
+	int ret;
+	int	option;
+	t_options parsed_options;
 
-	init_ping(&ping);
-	if (parse_args(&ping, argc, argv, &status) < 0)
-		return (status);
-	if (resolve_host(&ping) < 0 || open_socket(&ping) < 0)
+	/* Initialize options with defaults*/
+	parsed_options.dst_info = NULL;
+	parsed_options.verbose = false;
+	parsed_options.flood = false;
+	parsed_options.preload = 0;
+	parsed_options.numeric = false;
+	parsed_options.timeout = 1000;
+	parsed_options.direct = false;
+	parsed_options.packetsize = 64;  // 56 data bytes + 8 ICMP header bytes = 64
+	parsed_options.ttl = 64;
+	parsed_options.count = 0;  // 0 means ping until Ctrl+C
+	parsed_options.deadline = 0;
+
+
+	while (1)
 	{
-		if (ping.sock >= 0)
-			close(ping.sock);
-		return (EXIT_FAILURE);
+		static struct option long_options[] = {\
+        {"verbose", no_argument, 0, 'v'}, \
+        {"flood", no_argument, 0, 'f'}, \
+        {"preload", required_argument, 0, 'l'}, \
+        {"numeric", no_argument, 0, 'n'}, \
+        {"timeout", required_argument, 0, 'W'}, \
+        {"deadline", required_argument, 0, 'w'}, \
+        {"pattern", required_argument, 0, 'p'}, \
+        {"direct", no_argument, 0, 'r'}, \
+        {"packetsize", required_argument, 0, 's'}, \
+        {"ttl", required_argument, 0, 't'}, \
+        {"timestamp", required_argument, 0, 'T'}, \
+        {"count", required_argument, 0, 'c'}, \
+        {"help", no_argument, 0, 'h'}, \
+        {"version", no_argument, 0, 'V'}, \
+        {0, 0, 0, 0}
+		};
+		/* getopt_long stores the option index here. */
+		int	options_index = 0;
+
+		/* getopt prints its errors with argv[0], keep them short */
+		argv[0] = "ft_ping";
+		optopt = 0;
+		option = getopt_long(argc, argv, "vfl:nW:w:p:rs:t:T:c:?V", long_options, &options_index);
+		/* Detect the end of the options. */
+		if (option == -1)
+			break ;
+		/*
+		 * getopt_long() returns '?' both for "-?" and for an invalid option.
+		 * On an invalid short option optopt holds the offending character,
+		 * on an invalid long option the current word starts with "--".
+		 */
+		else if (option == '?' && (optopt != 0 || strncmp(argv[optind - 1], "--", 2) == 0))
+		{
+			fprintf(stderr, "Try 'ft_ping --help' for more information.\n");
+			return EXIT_USAGE;
+		}
+		else if (option == '?' || option == 'h')
+		{
+			/* Display help information */
+			printf("Usage: ft_ping [-v] [-c count] [-i interval] [-W timeout] host\n");
+			printf("Send ICMP ECHO_REQUEST packets to network hosts\n\n");
+			printf("Options:\n");
+			printf("  -v             verbose output\n");
+			printf("  -c count       stop after <count> replies\n");
+			printf("  -f             flood ping\n");
+			printf("  -l preload     send <preload> number of packets as fast as possible\n");
+			printf("  -n             numeric output only\n");
+			printf("  -w deadline    timeout in seconds before ping exits\n");
+			printf("  -W timeout     time to wait for response\n");
+			printf("  -r             bypass routing tables\n");
+			printf("  -s packetsize  set number of data bytes to send\n");
+			printf("  -t ttl         set time to live\n");
+			printf("  -?             display this help and exit\n");
+			printf("  -V             output version information and exit\n");
+			return EXIT_SUCCESS;
+		}
+		else if (option == 'V')
+		{
+			/* Display version information */
+			printf("ft_ping (custom implementation) 1.0\n");
+			printf("Based on inetutils ping\n");
+			return EXIT_SUCCESS;
+		}
+		else
+		{
+			if (parse_option(&parsed_options, option, optarg) == -1)
+				return EXIT_FAILURE;
+		}
 	}
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = on_sigint;
-	sigaction(SIGINT, &sa, NULL);
-	printf("PING %s (%s): %zu data bytes", ping.host,
-		inet_ntoa(ping.dst.sin_addr), ping.datalen);
-	if (ping.verbose)
-		printf(", id 0x%04x = %u", ping.id, ping.id);
-	printf("\n");
-	ping_loop(&ping);
-	print_stats(&ping);
-	close(ping.sock);
-	return (ping.received ? EXIT_SUCCESS : EXIT_FAILURE);
+	if (optind == argc)
+	{
+		fprintf(stderr, "ft_ping: missing host operand\n");
+		fprintf(stderr, "Try 'ft_ping --help' for more information.\n");
+		return EXIT_USAGE;
+	}
+	// TODO - implement multiple hosts
+	if (optind + 1 < argc)
+	{
+		fprintf(stderr, "ft_ping: only one host is supported\n");
+		return EXIT_USAGE;
+	}
+	if (getuid() != 0)
+	{
+		fprintf(stderr, "ft_ping: permission denied: Please run as root\n");
+		return EXIT_FAILURE;
+	}
+
+	if (strlen(argv[optind]) > 255)
+	{
+		fprintf(stderr, "ft_ping: unknown host\n");
+		return EXIT_FAILURE;
+	}
+	strcpy(parsed_options.host, argv[optind]);
+
+	if (setup(&parsed_options) == EXIT_FAILURE)
+		return EXIT_FAILURE;
+	ret = ft_ping(argv[optind], parsed_options);
+	freeaddrinfo(parsed_options.dst_info);
+	if (parsed_options.sock_fd)
+		close(parsed_options.sock_fd);
+	return ret;
 }
