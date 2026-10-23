@@ -12,14 +12,14 @@
 
 NAME = ft_ping
 CC = gcc
-CFLAGS = -std=gnu99
+CFLAGS = -Wall -Wextra -Werror -std=gnu99
 IFLAGS = -I$(INC_DIR)
 SRC_DIR = src
 OBJ_DIR = obj
 INC_DIR = includes
 
 # Source files
-SRC_FILES = main.c icmp_tools.c
+SRC_FILES = main.c options.c socket.c icmp_tools.c
 SRC = $(addprefix $(SRC_DIR)/, $(SRC_FILES))
 OBJ = $(addprefix $(OBJ_DIR)/, $(SRC_FILES:.c=.o))
 
@@ -33,7 +33,7 @@ HEADERS = $(INC_DIR)/ping.h
 GREEN = \033[0;32m
 RESET = \033[0m
 
-all: $(OBJ_DIR) $(NAME)
+all: $(NAME)
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
@@ -42,7 +42,7 @@ $(NAME): $(OBJ)
 	$(CC) $(CFLAGS) $(OBJ) $(LIBS) -o $(NAME)
 	@echo "$(GREEN)$(NAME) successfully compiled!$(RESET)"
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $(IFLAGS) -c $< -o $@
 
 clean:
